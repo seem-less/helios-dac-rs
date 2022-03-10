@@ -60,6 +60,7 @@ impl NativeHeliosDacController {
     }
 }
 
+#[derive(Clone, Debug)]
 pub enum NativeHeliosDac {
     Idle(rusb::Device<rusb::Context>),
     Open {
