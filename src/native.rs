@@ -32,6 +32,20 @@ const CONTROL_GET_NAME: u8 = 0x05;
 const CONTROL_SET_NAME: u8 = 0x06;
 const CONTROL_SEND_SDK_VERSION: u8 = 0x07;
 
+pub struct NativeHeliosDacParams{
+    /// The unique hardware identifier for the DAC.
+    pub name: String,
+    /// The DAC's maximum point rate.
+    ///
+    /// As of writing this, this is hardcoded to `0xFFFF` in the original DAC source code.
+    pub max_point_rate:u32,
+    /// The DAC's maximum buffer capacity for storing points that are yet to be converted to
+    /// output.
+    ///
+    /// As of writing this, this is hardcoded to `HELIOS_MAX_POINTS (0x1000) * 7 + 5` in the original DAC source code.
+    pub buffer_capacity: u32,
+}
+
 pub struct NativeHeliosDacController {
     context: rusb::Context,
 }
