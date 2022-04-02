@@ -32,9 +32,8 @@ const CONTROL_GET_NAME: u8 = 0x05;
 const CONTROL_SET_NAME: u8 = 0x06;
 const CONTROL_SEND_SDK_VERSION: u8 = 0x07;
 
+#[derive(Clone,Copy,Debug)]
 pub struct NativeHeliosDacParams{
-    /// The unique hardware identifier for the DAC.
-    pub name: String,
     /// The DAC's maximum point rate.
     ///
     /// As of writing this, this is hardcoded to `0xFFFF` in the original DAC source code.
@@ -44,6 +43,8 @@ pub struct NativeHeliosDacParams{
     ///
     /// As of writing this, this is hardcoded to `HELIOS_MAX_POINTS (0x1000) * 7 + 5` in the original DAC source code.
     pub buffer_capacity: u32,
+    /// The unique hardware identifier for the DAC.
+    pub id: u32
 }
 
 pub struct NativeHeliosDacController {
@@ -194,6 +195,20 @@ impl NativeHeliosDac {
     pub fn stop(&self) -> Result<()> {
         let ctrl_buffer = [CONTROL_STOP, 0];
         self.send_control(&ctrl_buffer)
+    }
+
+    pub fn get_helios_constants(&self) -> NativeHeliosDacParams {
+        NativeHeliosDacParams{
+            max_point_rate:HELIOS_MAX_RATE,
+            buffer_capacity:FRAME_BUFFER_SIZE,
+            id: self.get_id()
+        }
+    }
+
+    pub fn get_id(&self) -> u32{
+        self.name().unwrap()
+            .chars().filter(|c|c.is_digit(10)).collect::<String>()
+            .parse::<u32>().unwrap()
     }
 
     fn call_control(&self, buffer: &[u8]) -> Result<([u8; 32], usize)> {
