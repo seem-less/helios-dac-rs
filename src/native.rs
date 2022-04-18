@@ -73,6 +73,14 @@ impl NativeHeliosDacController {
 
         Ok(dacs)
     }
+
+    pub fn get_device(&self,id:u32) -> Result<NativeHeliosDac>{
+        if let Some(device) = self.list_devices()?.into_iter().find(|d|d.get_helios_constants().id == id){
+            Ok(device)
+        }else{
+            Err(NativeHeliosError::InvalidDeviceResult.into())
+        }
+    }
 }
 
 pub enum NativeHeliosDac {
@@ -131,7 +139,7 @@ impl NativeHeliosDac {
             frame_buffer.push((pps_actual >> 8) as u8);
             frame_buffer.push((num_of_points_actual & 0xFF) as u8);
             frame_buffer.push((num_of_points_actual >> 8) as u8);
-            frame_buffer.push(0); // flags
+            frame_buffer.push(frame.flags.bits()); // flags
 
             let timeout = (8 + frame_buffer.len() >> 5) as u64;
             handle.write_bulk(ENDPOINT_BULK_OUT, &frame_buffer[0..], Duration::from_millis(timeout))?;
