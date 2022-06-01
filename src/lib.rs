@@ -5,7 +5,6 @@ mod device;
 #[cfg(feature = "native")]
 mod native;
 mod frame;
-// mod stream;
 
 #[cfg(feature = "sdk")]
 pub use crate::{device::*, wrapper::HeliosError};
