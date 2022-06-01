@@ -20,7 +20,7 @@ pub fn main() {
     let controller = NativeHeliosDacController::new().unwrap();
     let devices = controller.list_devices().unwrap();
 
-    for device in devices {
+    for (..,device) in devices {
         let device = device.open().unwrap();
         let name = device.name().unwrap();
         let status = device.status().unwrap();

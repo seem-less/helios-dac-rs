@@ -1,4 +1,4 @@
-use helios_dac::{Frame,WriteFrameFlags, Point, Coordinate, Color};
+use helios_dac::{Frame, Point, Color, WriteFrameFlags};
 
 #[cfg(all(feature = "sdk", not(feature = "native")))]
 pub fn main() {
@@ -20,22 +20,19 @@ pub fn main() {
 
 #[cfg(feature = "native")]
 pub fn main() {
-    use std::{thread, time::Duration};
-
-    use helios_dac::{NativeHeliosDacController, DeviceStatus};
+    use helios_dac::NativeHeliosDacController;
 
     let frames = get_frames();
 
     let controller = NativeHeliosDacController::new().unwrap();
     let devices = controller.list_devices().unwrap();
 
-    for device in devices {
+    for (..,device) in devices {
         let mut device = device.open().unwrap();
 
         for frame in frames.clone() {
             println!("status: {:?}", device.status().unwrap());
             device.write_frame(frame).unwrap();
-            // thread::sleep(Duration::from_millis(1000));
         }
 
         device.stop().unwrap();
@@ -64,8 +61,7 @@ fn get_frames() -> Vec<Frame> {
             });
         }
 
-        // frames.push(Frame::new(3000, points));
-        frames.push(Frame::new_with_flags(3000, points,WriteFrameFlags::DONT_BLOCK));
+        frames.push(Frame::new(30000, points));
     }
 
     frames

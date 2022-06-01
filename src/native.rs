@@ -1,16 +1,8 @@
-use std::{
-    convert::TryInto,
-    sync::{
-        mpsc::{self, Sender, SendError},
-        Arc
-    },
-    thread,
-    time::Duration,
-};
+use std::time::Duration;
 
-use crate::{DeviceStatus, Frame, WriteFrameFlags};
-use rusb::{Context, Device, DeviceHandle, UsbContext};
+use rusb::{Context, Device, UsbContext};
 use thiserror::Error;
+use crate::{Frame, DeviceStatus};
 
 type Result<T> = std::result::Result<T, NativeHeliosError>;
 
@@ -40,6 +32,47 @@ const CONTROL_GET_NAME: u8 = 0x05;
 const CONTROL_SET_NAME: u8 = 0x06;
 const CONTROL_SEND_SDK_VERSION: u8 = 0x07;
 
+pub struct NativeHeliosDacController {
+    context: rusb::Context,
+}
+
+impl NativeHeliosDacController {
+    pub fn new() -> Result<Self> {
+        Ok(NativeHeliosDacController {
+            context: rusb::Context::new()?
+        })
+    }
+
+    pub fn list_devices(&self) -> Result<Vec<(u32,NativeHeliosDac)>> {
+        let devices = self.context.devices()?;
+        let mut dacs = vec![];
+        for device in devices.iter() {
+            let descriptor = device.device_descriptor()?;
+            if descriptor.vendor_id() != HELIOS_VID ||
+                descriptor.product_id() != HELIOS_PID {
+                continue;
+            }
+            let dac:NativeHeliosDac = device.into();
+            // Open to get the DAC's ID
+            let dac = dac.open().unwrap();
+            let id = dac.get_id();
+            // release the USB interface and return a NativeHeliosDac::Idle instance
+            dacs.push((id,dac.close()));
+        }
+
+        Ok(dacs)
+    }
+
+    pub fn get_device(&self,id:u32) -> Result<NativeHeliosDac>{
+        let devices = self.list_devices()?;
+        if let Some((..,dac)) = devices.into_iter().find(|(dac_id,..)|*dac_id == id){
+            Ok(dac)
+        }else{
+            Err(NativeHeliosError::InvalidDeviceResult)
+        }
+    }
+}
+
 #[derive(Clone,Copy,Debug)]
 pub struct NativeHeliosDacParams{
     /// The DAC's maximum point rate.
@@ -55,142 +88,14 @@ pub struct NativeHeliosDacParams{
     pub id: u32
 }
 
-pub struct NativeHeliosDacController {
-    context: rusb::Context,
-}
-
-impl NativeHeliosDacController {
-    pub fn new() -> Result<Self> {
-        Ok(NativeHeliosDacController {
-            context: rusb::Context::new()?
-        })
-    }
-
-    pub fn list_devices(&self) -> Result<Vec<NativeHeliosDac>> {
-        let devices = self.context.devices()?;
-        let mut dacs = vec![];
-        for device in devices.iter() {
-            let descriptor = device.device_descriptor()?;
-            if descriptor.vendor_id() != HELIOS_VID ||
-                descriptor.product_id() != HELIOS_PID {
-                continue;
-            }
-            let dac = device.into();
-            dacs.push(dac);
-        }
-
-        Ok(dacs)
-    }
-
-    pub fn get_device(&self,id:u32) -> Result<NativeHeliosDac>{
-        if let Some(device) = self.list_devices()?.into_iter().find(|d|d.get_helios_constants().id == id){
-            Ok(device)
-        }else{
-            Err(NativeHeliosError::InvalidDeviceResult.into())
+impl From<u32> for NativeHeliosDacParams{
+    fn from(id: u32) -> Self {
+        Self{
+            max_point_rate:HELIOS_MAX_RATE,
+            buffer_capacity:FRAME_BUFFER_SIZE,
+            id
         }
     }
-}
-
-pub struct NonBlockingNativeHeliosDac{
-    dac:Arc<NativeHeliosDac>,
-    thread_handle: thread::JoinHandle<()>,
-    sender: Sender<Message>
-}
-
-impl NonBlockingNativeHeliosDac{
-    pub fn new(dac:NativeHeliosDac)->Self{
-        let (sender, receiver) = mpsc::channel();
-        let dac = Arc::new(dac);
-        let dac_c = Arc::clone(&dac);
-
-        let thread_handle = thread::spawn(move||loop{
-            if let Ok(message) = receiver.recv(){
-                match message {
-                    Message::NewJob(frame) => {
-                        loop{
-                            if let Ok(DeviceStatus::Ready) = dac_c.status(){
-                                if let NativeHeliosDac::Open {ref handle,..} = *dac_c{
-                                    send_frame(&handle, &frame).expect("Failed to send frame to DAC");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Message::Terminate => {
-                        break;
-                    }
-                }
-            }
-        });
-
-        NonBlockingNativeHeliosDac { 
-            dac,
-            thread_handle,
-            sender
-        }
- 
-    }
-
-    pub fn write_frame(&self,frame:Frame) -> Result<()>{
-        if let WriteFrameFlags::DONT_BLOCK = frame.flags{
-            self.sender.send(Message::NewJob(write_frame_only(&frame))).map_err(|e|NativeHeliosError::ChannelSendError(e))
-        }else{
-            Err(NativeHeliosError::InvalidWriteFrameFlag)
-        }
-    }
-
-    pub fn stop(self) -> Result<()>{
-        self.sender.send(Message::Terminate).unwrap();
-        self.thread_handle.join().unwrap();
-        self.dac.stop()
-    }
-}
-
-pub enum Message {
-    NewJob(Vec<u8>),
-    Terminate,
-}
-
-/// send the frame to the dac
-fn send_frame(handle: &DeviceHandle<Context>, frame: &Vec<u8>) -> Result<()> {
-    let timeout = (8 + frame.len() >> 5) as u64;
-    handle.write_bulk(
-        ENDPOINT_BULK_OUT,
-        &frame[0..],
-        Duration::from_millis(timeout),
-    )?;
-    Ok(())
-}
-
-/// writes a new frame ready to be sent to the dac
-fn write_frame_only(frame:&Frame) -> Vec<u8>{
-    let mut frame_buffer = Vec::with_capacity(FRAME_BUFFER_SIZE.try_into().unwrap());
-
-        // this is a bug workaround, the mcu won't correctly receive transfers with these sizes
-        let mut pps_actual = frame.pps;
-        let mut num_of_points_actual = frame.points.len();
-        if (frame.points.len() - 45) % 64 == 0 {
-            num_of_points_actual -= 1;
-            // adjust pps to keep the same frame duration even with one less point
-            pps_actual = frame.pps * ((num_of_points_actual as f32) / (frame.points.len() as f32) + 0.5f32) as u32;
-        }
-
-        for point in &frame.points {
-            frame_buffer.push((point.coordinate.x >> 4) as u8);
-            frame_buffer.push(((point.coordinate.x & 0x0F) << 4) as u8 | (point.coordinate.y >> 8) as u8);
-            frame_buffer.push((point.coordinate.y & 0xFF) as u8);
-            frame_buffer.push(point.color.r);
-            frame_buffer.push(point.color.g);
-            frame_buffer.push(point.color.b);
-            frame_buffer.push(point.intensity);
-        }
-        frame_buffer.push((pps_actual & 0xFF) as u8);
-        frame_buffer.push((pps_actual >> 8) as u8);
-        frame_buffer.push((num_of_points_actual & 0xFF) as u8);
-        frame_buffer.push((num_of_points_actual >> 8) as u8);
-        frame_buffer.push(frame.flags.bits());
-
-        frame_buffer
 }
 
 pub enum NativeHeliosDac {
@@ -222,16 +127,49 @@ impl NativeHeliosDac {
         }
     }
 
+    pub fn close(self) -> Self {
+        match self{
+            NativeHeliosDac::Idle(_) => self,
+            NativeHeliosDac::Open { device, handle } => {
+                drop(handle);
+                device.into()
+            },
+        }
+    }
+
     /// writes and outputs a frame to the dac
     pub fn write_frame(&self, frame: Frame) -> Result<()> {
-        if let NativeHeliosDac::Open {handle,..} = self{
+        if let NativeHeliosDac::Open { handle, .. } = self {
+            let mut frame_buffer = Vec::new();
 
-            if let WriteFrameFlags::DONT_BLOCK = frame.flags {
-                Err(NativeHeliosError::InvalidWriteFrameFlag)
-            } else {
-                send_frame(&handle, &write_frame_only(&frame))
+            // this is a bug workaround, the mcu won't correctly receive transfers with these sizes
+            let mut pps_actual = frame.pps;
+            let mut num_of_points_actual = frame.points.len();
+            if (frame.points.len() - 45) % 64 == 0 {
+                num_of_points_actual -= 1;
+                // adjust pps to keep the same frame duration even with one less point
+                pps_actual = frame.pps * ((num_of_points_actual as f32) / (frame.points.len() as f32) + 0.5f32) as u32;
             }
 
+            for point in frame.points {
+                frame_buffer.push((point.coordinate.x >> 4) as u8);
+                frame_buffer.push(((point.coordinate.x & 0x0F) << 4) as u8 | (point.coordinate.y >> 8) as u8);
+                frame_buffer.push((point.coordinate.y & 0xFF) as u8);
+                frame_buffer.push(point.color.r);
+                frame_buffer.push(point.color.g);
+                frame_buffer.push(point.color.b);
+                frame_buffer.push(point.intensity);
+            }
+            frame_buffer.push((pps_actual & 0xFF) as u8);
+            frame_buffer.push((pps_actual >> 8) as u8);
+            frame_buffer.push((num_of_points_actual & 0xFF) as u8);
+            frame_buffer.push((num_of_points_actual >> 8) as u8);
+            frame_buffer.push(frame.flags.bits()); // flags
+
+            let timeout = (8 + frame_buffer.len() >> 5) as u64;
+            handle.write_bulk(ENDPOINT_BULK_OUT, &frame_buffer[0..], Duration::from_millis(timeout))?;
+
+            Ok(())
         }else {
             Err(NativeHeliosError::DeviceNotOpened)
         }
@@ -252,6 +190,12 @@ impl NativeHeliosDac {
             }
             _ => Err(NativeHeliosError::InvalidDeviceResult)
         }
+    }
+
+    pub fn get_id(&self) -> u32{
+        self.name().unwrap()
+            .chars().filter(|c|c.is_digit(10)).collect::<String>()
+            .parse::<u32>().unwrap()
     }
 
     /// Get firmware version
@@ -290,20 +234,6 @@ impl NativeHeliosDac {
     pub fn stop(&self) -> Result<()> {
         let ctrl_buffer = [CONTROL_STOP, 0];
         self.send_control(&ctrl_buffer)
-    }
-
-    pub fn get_helios_constants(&self) -> NativeHeliosDacParams {
-        NativeHeliosDacParams{
-            max_point_rate:HELIOS_MAX_RATE,
-            buffer_capacity:FRAME_BUFFER_SIZE,
-            id: self.get_id()
-        }
-    }
-
-    pub fn get_id(&self) -> u32{
-        self.name().unwrap()
-            .chars().filter(|c|c.is_digit(10)).collect::<String>()
-            .parse::<u32>().unwrap()
     }
 
     fn call_control(&self, buffer: &[u8]) -> Result<([u8; 32], usize)> {
@@ -350,8 +280,4 @@ pub enum NativeHeliosError {
     InvalidDeviceResult,
     #[error("could not parse string: {0}")]
     Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("Channel send error: {0}")]
-    ChannelSendError(#[from] SendError<Message>),
-    #[error("WriteFrameFlags::DONT_BLOCK should be used with the NonBlockingNativeHeliosDac::write_frame method.")]
-    InvalidWriteFrameFlag
 }
