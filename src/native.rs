@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{time::Duration, num::ParseIntError};
 
 use rusb::{Context, Device, UsbContext};
 use thiserror::Error;
@@ -54,8 +54,8 @@ impl NativeHeliosDacController {
             }
             let dac:NativeHeliosDac = device.into();
             // Open to get the DAC's ID
-            let dac = dac.open().unwrap();
-            let id = dac.get_id();
+            let dac = dac.open()?;
+            let id = dac.get_id()?;
             // release the USB interface and return a NativeHeliosDac::Idle instance
             dacs.push((id,dac.close()));
         }
@@ -192,10 +192,10 @@ impl NativeHeliosDac {
         }
     }
 
-    pub fn get_id(&self) -> u32{
-        self.name().unwrap()
+    pub fn get_id(&self) -> Result<u32>{
+        Ok(self.name()?
             .chars().filter(|c|c.is_digit(10)).collect::<String>()
-            .parse::<u32>().unwrap()
+            .parse::<u32>()?)
     }
 
     /// Get firmware version
@@ -280,4 +280,6 @@ pub enum NativeHeliosError {
     InvalidDeviceResult,
     #[error("could not parse string: {0}")]
     Utf8Error(#[from] std::string::FromUtf8Error),
+    #[error("could not parse int from String: {0}")]
+    ParseIntError(#[from] ParseIntError)
 }

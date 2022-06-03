@@ -28,7 +28,7 @@ pub fn main() {
     let devices = controller.list_devices().unwrap();
 
     for (..,device) in devices {
-        let mut device = device.open().unwrap();
+        let device = device.open().unwrap();
 
         for frame in frames.clone() {
             println!("status: {:?}", device.status().unwrap());
