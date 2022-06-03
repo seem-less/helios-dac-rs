@@ -1,4 +1,4 @@
-use helios_dac::{Frame, Point, Color, WriteFrameFlags};
+use helios_dac::{Frame, Point, Color};
 
 #[cfg(all(feature = "sdk", not(feature = "native")))]
 pub fn main() {
